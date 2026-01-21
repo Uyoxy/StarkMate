@@ -72,10 +72,13 @@ async fn join_queue(
 
     match service.join_queue(match_request).await {
         Ok(response) => HttpResponse::Ok().json(response),
-        Err(e) => HttpResponse::ServiceUnavailable().json(ErrorResponse {
-            status: "Service temporarily unavailable".to_string(),
-            error: e,
-        }),
+        Err(e) => {
+            log::error!("Failed to join queue: {}", e);
+            HttpResponse::ServiceUnavailable().json(ErrorResponse {
+                status: "error".to_string(),
+                error: "internal_error".to_string(),
+            })
+        }
     }
 }
 
@@ -94,10 +97,13 @@ async fn get_status(
             status: "Request not found".to_string(),
             queue_status: None,
         }),
-        Err(e) => HttpResponse::ServiceUnavailable().json(ErrorResponse {
-            status: "Service temporarily unavailable".to_string(),
-            error: e,
-        }),
+        Err(e) => {
+            log::error!("Failed to get queue status: {}", e);
+            HttpResponse::ServiceUnavailable().json(ErrorResponse {
+                status: "error".to_string(),
+                error: "internal_error".to_string(),
+            })
+        }
     }
 }
 
@@ -112,10 +118,13 @@ async fn cancel_request(
         Ok(false) => HttpResponse::NotFound().json(serde_json::json!({
             "status": "Request not found"
         })),
-        Err(e) => HttpResponse::ServiceUnavailable().json(ErrorResponse {
-            status: "Service temporarily unavailable".to_string(),
-            error: e,
-        }),
+        Err(e) => {
+            log::error!("Failed to cancel request: {}", e);
+            HttpResponse::ServiceUnavailable().json(ErrorResponse {
+                status: "error".to_string(),
+                error: "internal_error".to_string(),
+            })
+        }
     }
 }
 
@@ -134,10 +143,13 @@ async fn accept_invite(
         Ok(None) => HttpResponse::NotFound().json(serde_json::json!({
             "status": "Invite not found"
         })),
-        Err(e) => HttpResponse::ServiceUnavailable().json(ErrorResponse {
-            status: "Service temporarily unavailable".to_string(),
-            error: e,
-        }),
+        Err(e) => {
+            log::error!("Failed to accept invite: {}", e);
+            HttpResponse::ServiceUnavailable().json(ErrorResponse {
+                status: "error".to_string(),
+                error: "internal_error".to_string(),
+            })
+        }
     }
 }
 

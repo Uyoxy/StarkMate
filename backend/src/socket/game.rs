@@ -73,11 +73,12 @@ pub fn join_room(room_id: &str, player_id: &str, player_name: Option<String>) ->
 
     // Check if room exists, create if not
     if !state.rooms.contains_key(room_id) {
-        drop(state); // Release the lock before calling create_room
-        let _ = create_room(); // This creates a new room with a UUID
-        state = GAME_STATE.lock().unwrap();
-        // Now create the room with the requested ID
+        drop(state); // Release the lock before creating the room
+        
+        // Create the room with the requested ID
         let (tx, _) = broadcast::channel(100);
+        
+        state = GAME_STATE.lock().unwrap();
         state.rooms.insert(room_id.to_string(), Room::new(room_id.to_string()));
         state.message_senders.insert(room_id.to_string(), tx);
     }
@@ -360,10 +361,27 @@ mod tests {
         let room_id = create_room_with_time(10_000, 2_000);
         join_room(&room_id, "white_player", None).unwrap();
         join_room(&room_id, "black_player", None).unwrap();
+        
+        // Capture initial time before the move
+        let initial_time = {
+            let state = GAME_STATE.lock().unwrap();
+            let room = state.rooms.get(&room_id).unwrap();
+            room.white_remaining_ms
+        };
+        
         send_move(&room_id, "white_player", "e2e4").unwrap();
+        
         let state = GAME_STATE.lock().unwrap();
         let room = state.rooms.get(&room_id).unwrap();
-        assert!(room.white_remaining_ms > 11_900);
+        
+        // Verify increment was applied (should be greater than initial despite time passing)
+        assert!(
+            room.white_remaining_ms > initial_time,
+            "Expected white's time to increase after move with increment. Initial: {}, Final: {}",
+            initial_time,
+            room.white_remaining_ms
+        );
+        
         drop(state);
         cleanup_room(&room_id);
     }

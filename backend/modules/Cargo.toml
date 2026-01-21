@@ -26,7 +26,7 @@ uuid = { version = "1.8.0", features = ["serde", "v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 validator = { version = "0.17.0", features = ["derive"] }
 rand = "0.8.5"
-deadpool-redis = "0.18"
+deadpool-redis = "0.22.0"
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "script"] }
 
 
