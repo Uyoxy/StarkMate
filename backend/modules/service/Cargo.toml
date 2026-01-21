@@ -11,5 +11,5 @@ rand = "0.8"
 
 dto = { path = "../dto"}
 db = {path = "../db"}
-entity = { path = "../db/entity"}
+db_entity = { path = "../db/entity" }
 error ={ path = "../error"}

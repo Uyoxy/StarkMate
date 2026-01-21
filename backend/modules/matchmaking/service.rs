@@ -1,9 +1,11 @@
 use actix_web::web;
+use chrono::Utc;
+use deadpool_redis::Pool;
+use redis::AsyncCommands;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use uuid::Uuid;
-use chrono::Utc;
 
 use super::models::*;
 
@@ -13,226 +15,429 @@ const DEFAULT_ESTIMATED_WAIT_TIME: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct MatchmakingService {
-    queue: Arc<Mutex<MatchmakingQueue>>,
+    redis_pool: Pool,
     active_matches: Arc<Mutex<HashMap<Uuid, Match>>>,
 }
 
 impl MatchmakingService {
-    pub fn new() -> Self {
+    pub fn new(redis_pool: Pool) -> Self {
         Self {
-            queue: Arc::new(Mutex::new(MatchmakingQueue::new())),
+            redis_pool,
             active_matches: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub fn join_queue(&self, request: MatchRequest) -> MatchmakingResponse {
-        let mut queue = self.queue.lock().unwrap();
+    async fn get_redis_connection(
+        &self,
+    ) -> Result<deadpool_redis::Connection, String> {
+        self.redis_pool
+            .get()
+            .await
+            .map_err(|e| format!("Redis connection failed: {}", e))
+    }
+
+    pub async fn join_queue(
+        &self,
+        request: MatchRequest,
+    ) -> Result<MatchmakingResponse, String> {
         let request_id = request.id;
 
         match request.match_type {
             MatchType::Rated => {
-                if let Some(match_result) = self.find_rated_match(&request, &mut queue) {
-                    return match_result;
+                if let Some(match_result) = self.find_rated_match(&request).await? {
+                    return Ok(match_result);
                 }
-                queue.rated_queue.push(request);
+                self.add_to_redis_queue(&request).await?;
             }
             MatchType::Casual => {
-                if let Some(match_result) = self.find_casual_match(&request, &mut queue) {
-                    return match_result;
+                if let Some(match_result) = self.find_casual_match(&request).await? {
+                    return Ok(match_result);
                 }
-                queue.casual_queue.push(request);
+                self.add_to_redis_queue(&request).await?;
             }
             MatchType::Private => {
                 if let Some(invite_address) = &request.invite_address {
-                    queue.private_invites.insert(invite_address.clone(), request);
-                    return MatchmakingResponse {
+                    self.add_private_invite(invite_address, &request).await?;
+                    return Ok(MatchmakingResponse {
                         status: "Waiting for invited player".to_string(),
                         match_id: None,
                         request_id,
-                    };
+                    });
                 } else {
-                    return MatchmakingResponse {
-                        status: "Invalid private match request: missing invite address".to_string(),
+                    return Ok(MatchmakingResponse {
+                        status: "Invalid private match request: missing invite address"
+                            .to_string(),
                         match_id: None,
                         request_id,
-                    };
+                    });
                 }
             }
         }
 
-        MatchmakingResponse {
+        Ok(MatchmakingResponse {
             status: "Added to queue".to_string(),
             match_id: None,
             request_id,
+        })
+    }
+
+    async fn add_to_redis_queue(&self, request: &MatchRequest) -> Result<(), String> {
+        let mut conn = self.get_redis_connection().await?;
+        let key = request.match_type.redis_key();
+        let score = Utc::now().timestamp() as f64;
+        let value = request
+            .to_redis_value()
+            .map_err(|e| format!("Serialization error: {}", e))?;
+
+        conn.zadd::<_, _, _, ()>(&key, &value, score)
+            .await
+            .map_err(|e| format!("Redis ZADD failed: {}", e))?;
+
+        // Set TTL of 1 hour on the queue to prevent stale entries
+        // Individual entries will be removed when matched or cancelled
+        conn.expire::<_, ()>(&key, 3600)
+            .await
+            .map_err(|e| format!("Redis EXPIRE failed: {}", e))?;
+
+        Ok(())
+    }
+
+
+    async fn add_private_invite(
+        &self,
+        invite_address: &str,
+        request: &MatchRequest,
+    ) -> Result<(), String> {
+        let mut conn = self.get_redis_connection().await?;
+        let key = "matchmaking:invites";
+        let value = request
+            .to_redis_value()
+            .map_err(|e| format!("Serialization error: {}", e))?;
+
+        conn.hset::<_, _, _, ()>(key, invite_address, &value)
+            .await
+            .map_err(|e| format!("Redis HSET failed: {}", e))?;
+
+        Ok(())
+    }
+
+    pub async fn check_private_invite(
+        &self,
+        wallet_address: &str,
+    ) -> Result<Option<MatchRequest>, String> {
+        let mut conn = self.get_redis_connection().await?;
+        let key = "matchmaking:invites";
+
+        let value: Option<String> = conn
+            .hget(key, wallet_address)
+            .await
+            .map_err(|e| format!("Redis HGET failed: {}", e))?;
+
+        match value {
+            Some(json) => MatchRequest::from_redis_value(&json)
+                .map(Some)
+                .map_err(|e| format!("Deserialization error: {}", e)),
+            None => Ok(None),
         }
     }
 
-    pub fn check_private_invite(&self, wallet_address: &str) -> Option<MatchRequest> {
-        let queue = self.queue.lock().unwrap();
-        queue.private_invites.get(wallet_address).cloned()
-    }
-
-    pub fn accept_private_invite(
+    pub async fn accept_private_invite(
         &self,
         inviter_request_id: Uuid,
         accepting_player: Player,
-    ) -> Option<MatchmakingResponse> {
-        let mut queue = self.queue.lock().unwrap();
+    ) -> Result<Option<MatchmakingResponse>, String> {
+        let mut conn = self.get_redis_connection().await?;
+        let key = "matchmaking:invites";
 
-        let invite_entry = queue.private_invites.iter()
-            .find(|(_, req)| req.id == inviter_request_id);
+        // Get all invites
+        let invites: HashMap<String, String> = conn
+            .hgetall(key)
+            .await
+            .map_err(|e| format!("Redis HGETALL failed: {}", e))?;
 
-        if let Some((invite_address, invite_request)) = invite_entry.cloned() {
-            queue.private_invites.remove(&invite_address);
+        // Find the matching invite
+        for (invite_address, json) in invites {
+            if let Ok(invite_request) = MatchRequest::from_redis_value(&json) {
+                if invite_request.id == inviter_request_id {
+                    // Remove the invite
+                    conn.hdel::<_, _, ()>(key, &invite_address)
+                        .await
+                        .map_err(|e| format!("Redis HDEL failed: {}", e))?;
 
-            let match_id = Uuid::new_v4();
-            let new_match = Match {
-                id: match_id,
-                player1: invite_request.player,
-                player2: accepting_player,
-                match_type: MatchType::Private,
-                created_at: Utc::now(),
-            };
+                    // Create match
+                    let match_id = Uuid::new_v4();
+                    let new_match = Match {
+                        id: match_id,
+                        player1: invite_request.player,
+                        player2: accepting_player,
+                        match_type: MatchType::Private,
+                        created_at: Utc::now(),
+                    };
 
-            let mut active_matches = self.active_matches.lock().unwrap();
-            active_matches.insert(match_id, new_match);
+                    let mut active_matches = self.active_matches.lock().unwrap();
+                    active_matches.insert(match_id, new_match);
 
-            Some(MatchmakingResponse {
-                status: "Match created".to_string(),
-                match_id: Some(match_id),
-                request_id: inviter_request_id,
-            })
-        } else {
-            None
-        }
-    }
-
-    pub fn cancel_request(&self, request_id: Uuid) -> bool {
-        let mut queue = self.queue.lock().unwrap();
-
-        if let Some(index) = queue.rated_queue.iter().position(|req| req.id == request_id) {
-            queue.rated_queue.remove(index);
-            return true;
-        }
-
-        if let Some(index) = queue.casual_queue.iter().position(|req| req.id == request_id) {
-            queue.casual_queue.remove(index);
-            return true;
-        }
-
-        let invite_key = queue.private_invites.iter()
-            .find(|(_, req)| req.id == request_id)
-            .map(|(key, _)| key.clone());
-
-        if let Some(key) = invite_key {
-            queue.private_invites.remove(&key);
-            return true;
-        }
-
-        false
-    }
-
-    pub fn get_queue_status(&self, request_id: Uuid) -> Option<QueueStatus> {
-        let queue = self.queue.lock().unwrap();
-
-        if let Some(index) = queue.rated_queue.iter().position(|req| req.id == request_id) {
-            return Some(QueueStatus {
-                request_id,
-                position: index + 1,
-                estimated_wait_time: self.estimate_wait_time(index, &MatchType::Rated),
-                match_type: MatchType::Rated,
-            });
-        }
-
-        if let Some(index) = queue.casual_queue.iter().position(|req| req.id == request_id) {
-            return Some(QueueStatus {
-                request_id,
-                position: index + 1,
-                estimated_wait_time: self.estimate_wait_time(index, &MatchType::Casual),
-                match_type: MatchType::Casual,
-            });
-        }
-
-        for (_, req) in queue.private_invites.iter() {
-            if req.id == request_id {
-                return Some(QueueStatus {
-                    request_id,
-                    position: 1,
-                    estimated_wait_time: DEFAULT_ESTIMATED_WAIT_TIME,
-                    match_type: MatchType::Private,
-                });
+                    return Ok(Some(MatchmakingResponse {
+                        status: "Match created".to_string(),
+                        match_id: Some(match_id),
+                        request_id: inviter_request_id,
+                    }));
+                }
             }
         }
 
-        None
+        Ok(None)
     }
 
-    fn find_rated_match(
+    pub async fn cancel_request(&self, request_id: Uuid) -> Result<bool, String> {
+        let mut conn = self.get_redis_connection().await?;
+
+        // Try to remove from rated queue
+        if self
+            .remove_from_queue(&mut conn, "matchmaking:queue:rated", request_id)
+            .await?
+        {
+            return Ok(true);
+        }
+
+        // Try to remove from casual queue
+        if self
+            .remove_from_queue(&mut conn, "matchmaking:queue:casual", request_id)
+            .await?
+        {
+            return Ok(true);
+        }
+
+        // Try to remove from private invites
+        let invites: HashMap<String, String> = conn
+            .hgetall("matchmaking:invites")
+            .await
+            .map_err(|e| format!("Redis HGETALL failed: {}", e))?;
+
+        for (invite_address, json) in invites {
+            if let Ok(request) = MatchRequest::from_redis_value(&json) {
+                if request.id == request_id {
+                    conn.hdel::<_, _, ()>("matchmaking:invites", &invite_address)
+                        .await
+                        .map_err(|e| format!("Redis HDEL failed: {}", e))?;
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
+    async fn remove_from_queue(
+        &self,
+        conn: &mut deadpool_redis::Connection,
+        key: &str,
+        request_id: Uuid,
+    ) -> Result<bool, String> {
+        let members: Vec<String> = conn
+            .zrange(key, 0, -1)
+            .await
+            .map_err(|e| format!("Redis ZRANGE failed: {}", e))?;
+
+        for member in members {
+            if let Ok(request) = MatchRequest::from_redis_value(&member) {
+                if request.id == request_id {
+                    conn.zrem::<_, _, ()>(key, &member)
+                        .await
+                        .map_err(|e| format!("Redis ZREM failed: {}", e))?;
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
+    pub async fn get_queue_status(
+        &self,
+        request_id: Uuid,
+    ) -> Result<Option<QueueStatus>, String> {
+        let mut conn = self.get_redis_connection().await?;
+
+        // Check rated queue
+        if let Some(status) = self
+            .get_status_from_queue(
+                &mut conn,
+                "matchmaking:queue:rated",
+                request_id,
+                MatchType::Rated,
+            )
+            .await?
+        {
+            return Ok(Some(status));
+        }
+
+        // Check casual queue
+        if let Some(status) = self
+            .get_status_from_queue(
+                &mut conn,
+                "matchmaking:queue:casual",
+                request_id,
+                MatchType::Casual,
+            )
+            .await?
+        {
+            return Ok(Some(status));
+        }
+
+        // Check private invites
+        let invites: HashMap<String, String> = conn
+            .hgetall("matchmaking:invites")
+            .await
+            .map_err(|e| format!("Redis HGETALL failed: {}", e))?;
+
+        for (_, json) in invites {
+            if let Ok(request) = MatchRequest::from_redis_value(&json) {
+                if request.id == request_id {
+                    return Ok(Some(QueueStatus {
+                        request_id,
+                        position: 1,
+                        estimated_wait_time: DEFAULT_ESTIMATED_WAIT_TIME,
+                        match_type: MatchType::Private,
+                    }));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn get_status_from_queue(
+        &self,
+        conn: &mut deadpool_redis::Connection,
+        key: &str,
+        request_id: Uuid,
+        match_type: MatchType,
+    ) -> Result<Option<QueueStatus>, String> {
+        let members: Vec<String> = conn
+            .zrange(key, 0, -1)
+            .await
+            .map_err(|e| format!("Redis ZRANGE failed: {}", e))?;
+
+        for (index, member) in members.iter().enumerate() {
+            if let Ok(request) = MatchRequest::from_redis_value(member) {
+                if request.id == request_id {
+                    return Ok(Some(QueueStatus {
+                        request_id,
+                        position: index + 1,
+                        estimated_wait_time: self.estimate_wait_time(index, &match_type),
+                        match_type,
+                    }));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    async fn find_rated_match(
         &self,
         request: &MatchRequest,
-        queue: &mut MatchmakingQueue,
-    ) -> Option<MatchmakingResponse> {
+    ) -> Result<Option<MatchmakingResponse>, String> {
+        let mut conn = self.get_redis_connection().await?;
+        let key = "matchmaking:queue:rated";
         let player_elo = request.player.elo;
         let max_elo_diff = request.max_elo_diff.unwrap_or(DEFAULT_MAX_ELO_DIFF);
 
-        let opponent_index = queue.rated_queue.iter().position(|req| {
-            let elo_diff = (req.player.elo as i32 - player_elo as i32).abs() as u32;
-            elo_diff <= max_elo_diff
-        });
+        // Lua script for atomic find-and-remove operation
+        // This prevents race conditions where two players try to match with the same opponent
+        let lua_script = r#"
+            local key = KEYS[1]
+            local player_elo = tonumber(ARGV[1])
+            local max_elo_diff = tonumber(ARGV[2])
+            
+            local members = redis.call('ZRANGE', key, 0, -1)
+            
+            for i, member in ipairs(members) do
+                local opponent = cjson.decode(member)
+                local elo_diff = math.abs(opponent.player.elo - player_elo)
+                
+                if elo_diff <= max_elo_diff then
+                    redis.call('ZREM', key, member)
+                    return member
+                end
+            end
+            
+            return nil
+        "#;
 
-        if let Some(index) = opponent_index {
-            let opponent_request = queue.rated_queue.remove(index);
-            let match_id = Uuid::new_v4();
+        let result: Option<String> = redis::Script::new(lua_script)
+            .key(key)
+            .arg(player_elo)
+            .arg(max_elo_diff)
+            .invoke_async(&mut conn)
+            .await
+            .map_err(|e| format!("Redis Lua script failed: {}", e))?;
 
-            let new_match = Match {
-                id: match_id,
-                player1: opponent_request.player,
-                player2: request.player.clone(),
-                match_type: MatchType::Rated,
-                created_at: Utc::now(),
-            };
+        if let Some(opponent_json) = result {
+            if let Ok(opponent_request) = MatchRequest::from_redis_value(&opponent_json) {
+                // Create match
+                let match_id = Uuid::new_v4();
+                let new_match = Match {
+                    id: match_id,
+                    player1: opponent_request.player,
+                    player2: request.player.clone(),
+                    match_type: MatchType::Rated,
+                    created_at: Utc::now(),
+                };
 
-            let mut active_matches = self.active_matches.lock().unwrap();
-            active_matches.insert(match_id, new_match);
+                let mut active_matches = self.active_matches.lock().unwrap();
+                active_matches.insert(match_id, new_match);
 
-            Some(MatchmakingResponse {
-                status: "Match found".to_string(),
-                match_id: Some(match_id),
-                request_id: request.id,
-            })
-        } else {
-            None
+                return Ok(Some(MatchmakingResponse {
+                    status: "Match found".to_string(),
+                    match_id: Some(match_id),
+                    request_id: request.id,
+                }));
+            }
         }
+
+        Ok(None)
     }
 
-    fn find_casual_match(
+    async fn find_casual_match(
         &self,
         request: &MatchRequest,
-        queue: &mut MatchmakingQueue,
-    ) -> Option<MatchmakingResponse> {
-        if !queue.casual_queue.is_empty() {
-            let opponent_request = queue.casual_queue.remove(0);
-            let match_id = Uuid::new_v4();
+    ) -> Result<Option<MatchmakingResponse>, String> {
+        let mut conn = self.get_redis_connection().await?;
+        let key = "matchmaking:queue:casual";
 
-            let new_match = Match {
-                id: match_id,
-                player1: opponent_request.player,
-                player2: request.player.clone(),
-                match_type: MatchType::Casual,
-                created_at: Utc::now(),
-            };
+        // Pop the oldest player from queue (FIFO)
+        let result: Option<(String, f64)> = conn
+            .zpopmin(key, 1)
+            .await
+            .map_err(|e| format!("Redis ZPOPMIN failed: {}", e))?
+            .into_iter()
+            .next();
 
-            let mut active_matches = self.active_matches.lock().unwrap();
-            active_matches.insert(match_id, new_match);
+        if let Some((member, _score)) = result {
+            if let Ok(opponent_request) = MatchRequest::from_redis_value(&member) {
+                let match_id = Uuid::new_v4();
+                let new_match = Match {
+                    id: match_id,
+                    player1: opponent_request.player,
+                    player2: request.player.clone(),
+                    match_type: MatchType::Casual,
+                    created_at: Utc::now(),
+                };
 
-            Some(MatchmakingResponse {
-                status: "Match found".to_string(),
-                match_id: Some(match_id),
-                request_id: request.id,
-            })
-        } else {
-            None
+                let mut active_matches = self.active_matches.lock().unwrap();
+                active_matches.insert(match_id, new_match);
+
+                return Ok(Some(MatchmakingResponse {
+                    status: "Match found".to_string(),
+                    match_id: Some(match_id),
+                    request_id: request.id,
+                }));
+            }
         }
+
+        Ok(None)
     }
 
     fn estimate_wait_time(&self, position: usize, match_type: &MatchType) -> Duration {
@@ -243,21 +448,45 @@ impl MatchmakingService {
         }
     }
 
-    pub fn expand_elo_ranges(&self) {
-        let mut queue = self.queue.lock().unwrap();
+    pub async fn expand_elo_ranges(&self) -> Result<(), String> {
+        let mut conn = self.get_redis_connection().await?;
+        let key = "matchmaking:queue:rated";
         let now = Utc::now();
 
-        for request in queue.rated_queue.iter_mut() {
-            let wait_time = now.signed_duration_since(request.player.join_time);
-            let minutes_waiting = wait_time.num_minutes();
+        let members: Vec<(String, f64)> = conn
+            .zrange_withscores(key, 0, -1)
+            .await
+            .map_err(|e| format!("Redis ZRANGE failed: {}", e))?;
 
-            if minutes_waiting > 0 {
-                let additional_range = minutes_waiting as u32 * ELO_RANGE_INCREMENT_PER_MINUTE;
-                request.max_elo_diff = Some(
-                    request.max_elo_diff.unwrap_or(DEFAULT_MAX_ELO_DIFF) + additional_range,
-                );
+        for (member, score) in members {
+            if let Ok(mut request) = MatchRequest::from_redis_value(&member) {
+                let wait_time = now.signed_duration_since(request.player.join_time);
+                let minutes_waiting = wait_time.num_minutes();
+
+                if minutes_waiting > 0 {
+                    let additional_range = minutes_waiting as u32 * ELO_RANGE_INCREMENT_PER_MINUTE;
+                    request.max_elo_diff = Some(
+                        request.max_elo_diff.unwrap_or(DEFAULT_MAX_ELO_DIFF) + additional_range,
+                    );
+
+                    // Update in Redis
+                    let updated_value = request
+                        .to_redis_value()
+                        .map_err(|e| format!("Serialization error: {}", e))?;
+
+                    // Remove old entry and add updated one
+                    conn.zrem::<_, _, ()>(key, &member)
+                        .await
+                        .map_err(|e| format!("Redis ZREM failed: {}", e))?;
+
+                    conn.zadd::<_, _, _, ()>(key, &updated_value, score)
+                        .await
+                        .map_err(|e| format!("Redis ZADD failed: {}", e))?;
+                }
             }
         }
+
+        Ok(())
     }
 
     pub fn get_match(&self, match_id: Uuid) -> Option<Match> {
@@ -266,6 +495,6 @@ impl MatchmakingService {
     }
 }
 
-pub fn get_matchmaking_service() -> web::Data<MatchmakingService> {
-    web::Data::new(MatchmakingService::new())
+pub fn get_matchmaking_service(redis_pool: Pool) -> web::Data<MatchmakingService> {
+    web::Data::new(MatchmakingService::new(redis_pool))
 }

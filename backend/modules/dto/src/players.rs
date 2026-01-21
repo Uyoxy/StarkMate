@@ -1,4 +1,4 @@
-use entity::player::Model;
+use db_entity::player::Model;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;

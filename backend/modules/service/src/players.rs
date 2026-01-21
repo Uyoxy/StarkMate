@@ -1,7 +1,7 @@
 use crate::helper::password;
 use db::db::db::get_db;
 use dto::players::{NewPlayer, UpdatePlayer};
-use entity::player::{self, Model};
+use db_entity::player::{self, Model};
 use error::error::ApiError;
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use uuid::Uuid;

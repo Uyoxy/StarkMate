@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::Duration;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MatchType {
@@ -9,6 +11,17 @@ pub enum MatchType {
     Casual,
     Private,
 }
+
+impl MatchType {
+    pub fn redis_key(&self) -> String {
+        match self {
+            MatchType::Rated => "matchmaking:queue:rated".to_string(),
+            MatchType::Casual => "matchmaking:queue:casual".to_string(),
+            MatchType::Private => "matchmaking:invites".to_string(),
+        }
+    }
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
@@ -26,6 +39,17 @@ pub struct MatchRequest {
     pub max_elo_diff: Option<u32>,      // For rated matches__
 }
 
+impl MatchRequest {
+    pub fn to_redis_value(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string(self)
+    }
+
+    pub fn from_redis_value(s: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(s)
+    }
+}
+
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Match {
     pub id: Uuid,
@@ -33,23 +57,6 @@ pub struct Match {
     pub player2: Player,
     pub match_type: MatchType,
     pub created_at: DateTime<Utc>, 
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MatchmakingQueue {
-    pub rated_queue: Vec<MatchRequest>,
-    pub casual_queue: Vec<MatchRequest>,
-    pub private_invites: HashMap<String, MatchRequest>, // wallet_address -> request
-}
-
-impl MatchmakingQueue {
-    pub fn new() -> Self {
-        Self {
-            rated_queue: Vec::new(),
-            casual_queue: Vec::new(),
-            private_invites: HashMap::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

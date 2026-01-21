@@ -1,36 +1,42 @@
-use actix_web::{App, HttpServer, web};
+use actix_web::{App, HttpServer};
 use dotenv::dotenv;
-use sqlx::postgres::PgPoolOptions;
+use modules::matchmaking;
 use std::env;
-mod routes;
-use actix_cors::Cors;
-use actix_web::http::header;
-use env_logger;
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv().ok();
+    env_logger::init();
 
-    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set in .env");
-    let db_pool = PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&database_url)
-        .await
-        .expect("DB connection failed");
+    println!("Starting XLMate Backend Server...");
+
+    // Initialize Redis connection pool
+    let redis_url = env::var("REDIS_URL")
+        .unwrap_or_else(|_| {
+            println!("REDIS_URL not set, using default: redis://localhost:6379");
+            "redis://localhost:6379".to_string()
+        });
+
+    let redis_pool = matchmaking::redis::create_redis_pool(&redis_url)
+        .expect("Failed to create Redis pool");
+
+    // Test Redis connection on startup
+    match matchmaking::redis::test_redis_connection(&redis_pool).await {
+        Ok(_) => println!("✅ Redis connection successful"),
+        Err(e) => {
+            eprintln!("⚠️  Warning: Redis connection failed: {}", e);
+            eprintln!("Matchmaking service will not be available");
+        }
+    }
+
+    println!("Server starting on http://127.0.0.1:8080");
 
     HttpServer::new(move || {
         App::new()
-            .app_data(actix_web::web::Data::new(db_pool.clone()))
-            // Add routes here
+            .app_data(matchmaking::service::get_matchmaking_service(redis_pool.clone()))
+            .configure(matchmaking::routes::config)
     })
     .bind("127.0.0.1:8080")?
     .run()
     .await
-
-use actix_web;
-use api::server;
-
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    server::main().await
-
 }
