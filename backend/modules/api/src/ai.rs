@@ -52,8 +52,9 @@ pub async fn get_ai_suggestion(payload: Json<AiSuggestionRequest>) -> HttpRespon
                     })
                 }
                 Err(e) => {
+                    log::error!("Engine error in get_ai_suggestion: {}", e);
                     HttpResponse::InternalServerError().json(json!({
-                        "error": format!("Engine error: {}", e)
+                        "error": "internal server error"
                     }))
                 }
             }
@@ -104,8 +105,9 @@ pub async fn analyze_position(payload: Json<PositionAnalysisRequest>) -> HttpRes
                     })
                 }
                 Err(e) => {
+                    log::error!("Engine error in analyze_position: {}", e);
                     HttpResponse::InternalServerError().json(json!({
-                        "error": format!("Engine error: {}", e)
+                        "error": "internal server error"
                     }))
                 }
             }
