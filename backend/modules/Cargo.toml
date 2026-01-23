@@ -33,7 +33,7 @@ api = { path = "api" }
 error = { path = "error" }
 
 [workspace]
-members = [".", "db", "db/migrations", "api", "dto", "service"]
+members = [".", "db", "db/migrations", "api", "dto", "service", "tournament"]
 
 
 [dependencies.sea-orm-migration]
