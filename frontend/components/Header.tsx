@@ -11,6 +11,7 @@ import { MoonIcon, SunIcon } from 'lucide-react'
 
 export function Header() {
     const { theme, setTheme } = useTheme()
+    const [collapsed, setCollapsed] = React.useState(false)
 
     return (
         <header className="h-16 border-b border-border bg-card/80 backdrop-blur-sm fixed top-0 left-0 right-0 z-50">
@@ -19,11 +20,11 @@ export function Header() {
                     <Sheet>
                         <SheetTrigger asChild>
                             <Button variant="ghost" size="icon" className="md:hidden">
-                                <MenuIcon className="h-6 w-6" />
+                                <MenuIcon />
                             </Button>
                         </SheetTrigger>
                         <SheetContent side="left" className="p-0 w-64">
-                            <GameSidebar />
+                            <GameSidebar collapsed={collapsed} setCollapsed={setCollapsed} />
                         </SheetContent>
                     </Sheet>
 
@@ -48,7 +49,7 @@ export function Header() {
                     </Button>
 
                     <Button variant="ghost" size="icon" className="md:hidden">
-                        <UserIcon className="h-6 w-6" />
+                        <UserIcon />
                     </Button>
                 </div>
             </div>

@@ -10,6 +10,9 @@ use error::error::ApiError;
 use serde_json::json;
 use validator::Validate;
 
+use service::engine_service::EngineService;
+use std::env;
+
 #[utoipa::path(
     post,
     path = "/v1/ai/suggest",
@@ -27,15 +30,34 @@ use validator::Validate;
 pub async fn get_ai_suggestion(payload: Json<AiSuggestionRequest>) -> HttpResponse {
     match payload.0.validate() {
         Ok(_) => {
-            // The real implementation would call the chess engine
-            // For now, we'll just return a mock response
-            HttpResponse::Ok().json(json!({
-                "best_move": "e2e4",
-                "evaluation": 0.3,
-                "depth": payload.0.depth.unwrap_or(10),
-                "principal_variation": ["e2e4", "e7e5", "Ng1f3"],
-                "computation_time_ms": 2345
-            }))
+            let engine_path = env::var("ENGINE_PATH").unwrap_or_else(|_| "stockfish".to_string());
+            let engine_service = EngineService::new(engine_path);
+            
+            let start_time = std::time::Instant::now();
+            let result = engine_service.get_suggestion(
+                &payload.0.fen,
+                payload.0.depth,
+                payload.0.time_limit_ms
+            ).await;
+            let elapsed = u32::try_from(start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
+            
+            match result {
+                Ok(result) => {
+                    HttpResponse::Ok().json(AiSuggestionResponse {
+                        best_move: result.best_move,
+                        evaluation: result.evaluation.unwrap_or(0.0),
+                        depth: result.depth.unwrap_or(payload.0.depth.unwrap_or(10)),
+                        principal_variation: result.principal_variation,
+                        computation_time_ms: elapsed,
+                    })
+                }
+                Err(e) => {
+                    log::error!("Engine error in get_ai_suggestion: {}", e);
+                    HttpResponse::InternalServerError().json(json!({
+                        "error": "internal server error"
+                    }))
+                }
+            }
         }
         Err(errors) => {
             let error_strings: Vec<String> = errors
@@ -70,23 +92,25 @@ pub async fn get_ai_suggestion(payload: Json<AiSuggestionRequest>) -> HttpRespon
 pub async fn analyze_position(payload: Json<PositionAnalysisRequest>) -> HttpResponse {
     match payload.0.validate() {
         Ok(_) => {
-            // The real implementation would analyze the position
-            // For now, we'll just return a mock response
-            HttpResponse::Ok().json(json!({
-                "evaluation": 0.3,
-                "best_line": ["e2e4", "e7e5", "Ng1f3", "Nb8c6"],
-                "alternatives": [
-                    {
-                        "chess_move": "d2d4",
-                        "evaluation": 0.25
-                    },
-                    {
-                        "chess_move": "c2c4",
-                        "evaluation": 0.20
-                    }
-                ],
-                "position_type": "Open Game"
-            }))
+            let engine_path = env::var("ENGINE_PATH").unwrap_or_else(|_| "stockfish".to_string());
+            let engine_service = EngineService::new(engine_path);
+            
+            match engine_service.analyze_position(&payload.0.fen, payload.0.depth).await {
+                Ok(result) => {
+                    HttpResponse::Ok().json(PositionAnalysisResponse {
+                        evaluation: result.evaluation.unwrap_or(0.0),
+                        best_line: result.principal_variation,
+                        alternatives: vec![], // Engine trait could be extended for multi-pv
+                        position_type: "Analyzed by Engine".to_string(),
+                    })
+                }
+                Err(e) => {
+                    log::error!("Engine error in analyze_position: {}", e);
+                    HttpResponse::InternalServerError().json(json!({
+                        "error": "internal server error"
+                    }))
+                }
+            }
         }
         Err(errors) => {
             let error_strings: Vec<String> = errors

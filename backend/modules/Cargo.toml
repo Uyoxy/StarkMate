@@ -37,16 +37,25 @@ api = { path = "api" }
 error = { path = "error" }
 
 [workspace]
-members = [".", "db", "db/migrations", "api", "dto", "service"]
-
-
-[dependencies.sea-orm-migration]
-version = "1.1.0"
-features = [
-  # Enable at least one `ASYNC_RUNTIME` and `DATABASE_DRIVER` feature if you want to run migration via CLI.
-  # View the list of supported features at https://www.sea-ql.org/SeaORM/docs/install-and-config/database-and-async-runtime.
-  # e.g.
-  "runtime-tokio-native-tls", # `ASYNC_RUNTIME` feature
-  "sqlx-postgres",            # `DATABASE_DRIVER` feature
+resolver = "2"
+members = [
+    "api",
+    "db",
+    "db/entity",
+    "db/migrations",
+    "dto",
+    "error",
+    "service",
+    "security",
+    "chess",
+    "challenge",
+    "tournament",
+    "matchmaking",
+    "engine"
 ]
+
+[workspace.dependencies]
+regex = "1.10.2"
+utoipa = "4.2.0"
+
 

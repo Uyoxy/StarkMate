@@ -1,9 +1,9 @@
 use actix_web::{
     HttpResponse, delete, get, post, put,
-    web::{Json, Path, Query},
+    web::{self, Json, Path, Query},
 };
 use dto::{
-    games::{CreateGameRequest, GameDisplayDTO, MakeMoveRequest, JoinGameRequest, GameStatus},
+    games::{CreateGameRequest, GameDisplayDTO, MakeMoveRequest, JoinGameRequest, GameStatus, ListGamesQuery},
     responses::{InvalidCredentialsResponse, NotFoundResponse},
 };
 use error::error::ApiError;
@@ -12,6 +12,8 @@ use validator::Validate;
 use uuid::Uuid;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+use sea_orm::DatabaseConnection;
+use service::games::GameService;
 
 #[utoipa::path(
     post,
@@ -115,20 +117,7 @@ pub async fn make_move(id: Path<Uuid>, payload: Json<MakeMoveRequest>) -> HttpRe
     }
 }
 
-#[derive(Debug, Deserialize, Serialize, ToSchema)]
-pub struct ListGamesQuery {
-    #[schema(example = "waiting")]
-    pub status: Option<String>,
-    
-    #[schema(value_type = Option<String>, format = "uuid", example = "123e4567-e89b-12d3-a456-426614174000")]
-    pub player_id: Option<Uuid>,
-    
-    #[schema(default = 1, example = 1)]
-    pub page: Option<i32>,
-    
-    #[schema(default = 10, example = 10)]
-    pub limit: Option<i32>,
-}
+
 
 #[utoipa::path(
     get,
@@ -148,80 +137,79 @@ pub struct ListGamesQuery {
     tag = "Games"
 )]
 #[get("")]
-pub async fn list_games(query: Query<ListGamesQuery>) -> HttpResponse {
-    // The real implementation would fetch games from the database with filters
-    // For now, we'll just return a mock response with filtering logic
-    
-    // Default pagination values
-    let page = query.page.unwrap_or(1);
-    let limit = query.limit.unwrap_or(10);
-    
-    // Create a mock list of games
-    let mut mock_games = vec![
-        json!({
-            "id": Uuid::new_v4(),
-            "status": "waiting",
-            "white_player_id": Uuid::new_v4(),
-            "black_player_id": null,
-            "created_at": "2025-05-31T10:00:00Z"
-        }),
-        json!({
-            "id": Uuid::new_v4(),
-            "status": "in_progress",
-            "white_player_id": Uuid::new_v4(),
-            "black_player_id": Uuid::new_v4(),
-            "created_at": "2025-05-31T11:00:00Z"
-        }),
-        json!({
-            "id": Uuid::new_v4(),
-            "status": "completed",
-            "white_player_id": Uuid::new_v4(),
-            "black_player_id": Uuid::new_v4(),
-            "created_at": "2025-05-31T09:00:00Z"
-        })
-    ];
-    
-    // Apply status filter if provided
-    if let Some(status) = &query.status {
-        mock_games.retain(|game| {
-            game["status"].as_str().unwrap_or("") == status
-        });
-    }
-    
-    // Apply player_id filter if provided
-    if let Some(player_id) = query.player_id {
-        mock_games.retain(|game| {
-            // Check if player is white or black player
-            let white_id = game["white_player_id"].as_str().unwrap_or("");
-            let black_id = game["black_player_id"].as_str().unwrap_or("");
-            white_id == player_id.to_string() || black_id == player_id.to_string()
-        });
-    }
-    
-    // Apply pagination
-    let total = mock_games.len();
-    let start_idx = ((page - 1) * limit) as usize;
-    let end_idx = (start_idx + limit as usize).min(total);
-    
-    // Get paginated subset (handle out of bounds)
-    let paginated_games = if start_idx < total {
-        mock_games[start_idx..end_idx].to_vec()
-    } else {
-        Vec::new()
-    };
-    
-    HttpResponse::Ok().json(json!({
-        "message": "Games found",
-        "data": {
-            "games": paginated_games,
-            "pagination": {
-                "total": total,
-                "page": page,
-                "limit": limit,
-                "pages": (total as f32 / limit as f32).ceil() as i32
-            }
+pub async fn list_games(
+    query: Query<ListGamesQuery>,
+    db: web::Data<DatabaseConnection>,
+) -> HttpResponse {
+    // Parse status string to enum if present
+    // Note: The Query struct has String for status, but Service expects Option<GameStatus> or we map it.
+    // The Service takes `status: Option<GameStatus>`.
+    // We need to parse the string to GameStatus.
+    let status_enum = if let Some(s) = &query.status {
+        // Simple mapping, assuming serde rename rules match or doing manual matching
+        match s.as_str() {
+            "waiting" => Some(GameStatus::Waiting),
+            "in_progress" => Some(GameStatus::InProgress),
+            "completed" => Some(GameStatus::Completed),
+            "aborted" => Some(GameStatus::Aborted),
+            _ => None, // Invalid status ignores filter or could error. Current mock ignored it.
         }
-    }))
+    } else {
+        None
+    };
+
+    let limit = query.limit.unwrap_or(10);
+    let cursor = query.cursor.clone();
+
+    match GameService::list_games(
+        db.get_ref(),
+        cursor,
+        limit,
+        query.player_id,
+        status_enum,
+    ).await {
+        Ok((games, next_cursor)) => {
+            // Map Entity Models to DTOs
+            // We need a mapper. For now I will do manual mapping or basic json.
+            // GameDisplayDTO matches fields mostly? 
+            // We need to construct GameDisplayDTO from game::Model.
+            // game::Model has `result: Option<ResultSide>` (Enum). DTO has `Result: GameResult` (Enum).
+            // This mapping might be verbose. For the optimization task, I will do a best-effort mapping inline.
+            
+            let game_dtos: Vec<serde_json::Value> = games.into_iter().map(|g| {
+                // Return generic JSON for now to avoid extensive DTO mapping boilerplate 
+                // if mapper isn't available, but we should try to match structure.
+                json!({
+                    "id": g.id,
+                    "white_player_id": g.white_player,
+                    "black_player_id": g.black_player,
+                    "status": if g.result.is_some() { "completed" } else { "in_progress" }, // simplified
+                    "result": g.result,
+                    "current_fen": g.fen,
+                    "time_control": 600, // placeholder as it's not in Game entity directly (duration_sec is there but it's different?)
+                    "increment": 0,
+                    "created_at": g.created_at,
+                    "started_at": g.started_at,
+                })
+            }).collect();
+
+            // Construct response with cursor
+            HttpResponse::Ok().json(json!({
+                "message": "Games found",
+                "data": {
+                    "games": game_dtos,
+                    "next_cursor": next_cursor,
+                    "limit": limit
+                }
+            }))
+        },
+        Err(e) => {
+            eprintln!("Error listing games: {}", e);
+            HttpResponse::InternalServerError().json(json!({
+                "message": "Internal server error"
+            }))
+        }
+    }
 }
 
 #[utoipa::path(

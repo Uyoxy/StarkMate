@@ -2,6 +2,7 @@ use actix_web::web;
 use chrono::Utc;
 use deadpool_redis::Pool;
 use redis::AsyncCommands;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -84,17 +85,21 @@ impl MatchmakingService {
     async fn add_to_redis_queue(&self, request: &MatchRequest) -> Result<(), String> {
         let mut conn = self.get_redis_connection().await?;
         let key = request.match_type.redis_key();
-        let score = Utc::now().timestamp() as f64;
+        let now = Utc::now();
+        let score = now.timestamp() as f64;
         let value = request
             .to_redis_value()
             .map_err(|e| format!("Serialization error: {}", e))?;
+
+        let cutoff = (now - chrono::Duration::hours(1)).timestamp() as f64;
+        conn.zrembyscore::<_, _, _, ()>(&key, f64::NEG_INFINITY, cutoff)
+            .await
+            .map_err(|e| format!("Redis ZREMRANGEBYSCORE failed: {}", e))?;
 
         conn.zadd::<_, _, _, ()>(&key, &value, score)
             .await
             .map_err(|e| format!("Redis ZADD failed: {}", e))?;
 
-        // Set TTL of 1 hour on the queue to prevent stale entries
-        // Individual entries will be removed when matched or cancelled
         conn.expire::<_, ()>(&key, 3600)
             .await
             .map_err(|e| format!("Redis EXPIRE failed: {}", e))?;
@@ -149,44 +154,60 @@ impl MatchmakingService {
         let mut conn = self.get_redis_connection().await?;
         let key = "matchmaking:invites";
 
-        // Get all invites
-        let invites: HashMap<String, String> = conn
-            .hgetall(key)
+        // Lua script for atomic find-and-remove operation
+        // This prevents race conditions where multiple players try to accept the same invite
+        let lua_script = r#"
+            local key = KEYS[1]
+            local target_request_id = ARGV[1]
+            
+            local invites = redis.call('HGETALL', key)
+            
+            for i = 1, #invites, 2 do
+                local invite_address = invites[i]
+                local invite_json = invites[i + 1]
+                local invite = cjson.decode(invite_json)
+                
+                if invite.id == target_request_id then
+                    redis.call('HDEL', key, invite_address)
+                    return invite_json
+                end
+            end
+            
+            return nil
+        "#;
+
+        let result: Option<String> = redis::Script::new(lua_script)
+            .key(key)
+            .arg(inviter_request_id.to_string())
+            .invoke_async(&mut conn)
             .await
-            .map_err(|e| format!("Redis HGETALL failed: {}", e))?;
+            .map_err(|e| format!("Redis Lua script failed: {}", e))?;
 
-        // Find the matching invite
-        for (invite_address, json) in invites {
-            if let Ok(invite_request) = MatchRequest::from_redis_value(&json) {
-                if invite_request.id == inviter_request_id {
-                    // Remove the invite
-                    conn.hdel::<_, _, ()>(key, &invite_address)
-                        .await
-                        .map_err(|e| format!("Redis HDEL failed: {}", e))?;
+        if let Some(invite_json) = result {
+            if let Ok(invite_request) = MatchRequest::from_redis_value(&invite_json) {
+                // Create match
+                let match_id = Uuid::new_v4();
+                let new_match = Match {
+                    id: match_id,
+                    player1: invite_request.player,
+                    player2: accepting_player,
+                    match_type: MatchType::Private,
+                    created_at: Utc::now(),
+                };
 
-                    // Create match
-                    let match_id = Uuid::new_v4();
-                    let new_match = Match {
-                        id: match_id,
-                        player1: invite_request.player,
-                        player2: accepting_player,
-                        match_type: MatchType::Private,
-                        created_at: Utc::now(),
-                    };
+                let mut active_matches = self.active_matches.lock().unwrap();
+                active_matches.insert(match_id, new_match);
 
-                    let mut active_matches = self.active_matches.lock().unwrap();
-                    active_matches.insert(match_id, new_match);
-
-                    return Ok(Some(MatchmakingResponse {
-                        status: "Match created".to_string(),
-                        match_id: Some(match_id),
-                        request_id: inviter_request_id,
-                    }));
-                }
+                return Ok(Some(MatchmakingResponse {
+                    status: "Match created".to_string(),
+                    match_id: Some(match_id),
+                    request_id: inviter_request_id,
+                }));
             }
         }
 
         Ok(None)
+
     }
 
     pub async fn cancel_request(&self, request_id: Uuid) -> Result<bool, String> {
@@ -408,12 +429,12 @@ impl MatchmakingService {
         let key = "matchmaking:queue:casual";
 
         // Pop the oldest player from queue (FIFO)
-        let result: Option<(String, f64)> = conn
+        let result: Vec<(String, f64)> = conn
             .zpopmin(key, 1)
             .await
-            .map_err(|e| format!("Redis ZPOPMIN failed: {}", e))?
-            .into_iter()
-            .next();
+            .map_err(|e| format!("Redis ZPOPMIN failed: {}", e))?;
+        
+        let result = result.into_iter().next();
 
         if let Some((member, _score)) = result {
             if let Ok(opponent_request) = MatchRequest::from_redis_value(&member) {

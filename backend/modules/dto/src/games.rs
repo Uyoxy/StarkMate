@@ -115,3 +115,22 @@ pub fn validate_uuid(uuid: &Uuid) -> Result<(), ValidationError> {
     }
     Ok(())
 }
+
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct ListGamesQuery {
+    #[schema(example = "waiting")]
+    pub status: Option<String>,
+    
+    #[schema(value_type = Option<String>, format = "uuid", example = "123e4567-e89b-12d3-a456-426614174000")]
+    pub player_id: Option<Uuid>,
+    
+    #[schema(default = 1, example = 1)]
+    /// Deprecated: Use cursor-based pagination
+    pub page: Option<i32>,
+    
+    #[schema(default = 10, example = 10)]
+    pub limit: Option<u64>,
+
+    #[schema(example = "MjAyNS0wNS0zMVQxMDowMDowMC4wMDAwMDBaLDEyM2U0NTY3LWU4OWItMTJkMy1hNDU2LTQyNjYxNDE3NDAwMA==")]
+    pub cursor: Option<String>,
+}

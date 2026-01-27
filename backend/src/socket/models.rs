@@ -10,6 +10,9 @@ pub enum ClientMessage {
     SendMove(SendMovePayload),
     LeaveRoom(LeaveRoomPayload),
     RequestGameLog(RequestGameLogPayload),
+    OfferTakeback(OfferTakebackPayload),
+    AcceptTakeback(AcceptTakebackPayload),
+    RejectTakeback(RejectTakebackPayload),
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,6 +40,24 @@ pub struct RequestGameLogPayload {
     pub room_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct OfferTakebackPayload {
+    pub room_id: String,
+    pub player_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AcceptTakebackPayload {
+    pub room_id: String,
+    pub player_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RejectTakebackPayload {
+    pub room_id: String,
+    pub player_id: String,
+}
+
 // Server message types
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
@@ -60,6 +81,19 @@ pub enum ServerMessage {
     GameLog {
         room_id: String,
         moves: Vec<MoveRecord>,
+    },
+    TakebackOffered {
+        room_id: String,
+        requester_id: String,
+    },
+    TakebackAccepted {
+        room_id: String,
+        game_state: GameState,
+        moves: Vec<MoveRecord>,
+    },
+    TakebackRejected {
+        room_id: String,
+        by_player_id: String,
     },
     Error {
         code: String,
@@ -158,6 +192,7 @@ pub struct Room {
     pub last_move_at: Option<u64>,
     pub initial_time_ms: u64,
     pub increment_ms: u64,
+    pub pending_takeback: Option<String>,
 }
 
 // Default time control: 10 minutes (600000ms)
@@ -190,6 +225,7 @@ impl Room {
             last_move_at: None,
             initial_time_ms,
             increment_ms,
+            pending_takeback: None,
         }
     }
     

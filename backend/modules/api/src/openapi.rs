@@ -43,8 +43,6 @@ impl Modify for SecurityAddon {
         // Authentication endpoints
         auth::login,
         auth::register,
-        auth::refresh_token,
-        auth::logout,
         
         // AI suggestion endpoints
         ai::get_ai_suggestion,
@@ -65,13 +63,12 @@ impl Modify for SecurityAddon {
             dto::games::JoinGameRequest,
             dto::games::GameStatus,
             dto::games::GameResult,
-            games::ListGamesQuery,
+            dto::games::ListGamesQuery,
             
             // Auth schemas
             dto::auth::LoginRequest,
             dto::auth::LoginResponse,
             dto::auth::RegisterRequest,
-            dto::auth::RefreshTokenRequest,
             dto::auth::TokenResponse,
             dto::auth::UserInfo,
             
@@ -209,5 +206,5 @@ If authentication fails or the token is missing, the connection will be immediat
   }
 }
 ```
-"#
+"#.to_string()
 }

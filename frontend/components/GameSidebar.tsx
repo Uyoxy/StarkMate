@@ -34,8 +34,8 @@ export function GameSidebar({
 }: SidebarProps) {
   const [isHovered, setIsHovered] = useState(false);
   const [collapsed, setLocalCollapsed] = useState(propCollapsed);
-  const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
-  const [isSignInModalOpen, setIsSignInModalOpen] = useState(false);
+  // const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
+  // const [isSignInModalOpen, setIsSignInModalOpen] = useState(false);
   // const { address, status } = useAppContext();
 
   useEffect(() => {
@@ -44,9 +44,9 @@ export function GameSidebar({
   
   useEffect(() => setLocalCollapsed(propCollapsed), [propCollapsed]);
 
-  const truncateAddress = (addr: string) => {
-    return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
-  };
+  // const truncateAddress = (addr: string) => {
+  //   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+  // };
 
   // For mobile view, we'll use a Sheet component
   if (isMobileView) {
@@ -148,18 +148,19 @@ export function GameSidebar({
             collapsed && !isHovered ? "opacity-0" : "opacity-100"
           }`}
         >
-          {status === "connected" ? (
+          {/* {status === "connected" ? (
             <div className="flex items-center space-x-3 p-2 rounded-lg bg-gray-800">
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-white truncate">
-                  {/* {truncateAddress(address)} */}
+                  {truncateAddress(address)}
                 </p>
               </div>
             </div>
           ) : (
+          */}
             <Button 
               className="w-full bg-gradient-to-r from-teal-500 to-blue-700 hover:from-teal-600 hover:to-blue-800 text-white shadow-lg hover:shadow-teal-500/20 transition-all duration-300 rounded-lg"
-              onClick={() => setIsWalletModalOpen(true)}
+              // onClick={() => setIsWalletModalOpen(true)}
             >
               <div className="flex items-center">
                 <div className="transform group-hover:scale-110 transition-transform duration-300">
@@ -174,7 +175,7 @@ export function GameSidebar({
                 </span>
               </div>
             </Button>
-          )}
+          {/* )} */}
           <div
             className={`space-y-2 transition-all duration-500 ${
               collapsed && !isHovered ? "scale-0" : "scale-100"
@@ -182,14 +183,14 @@ export function GameSidebar({
           >
             <Button 
               className="w-full bg-teal-600 hover:bg-teal-700 shadow-lg hover:shadow-teal-600/20 transition-all duration-300 rounded-lg"
-              onClick={() => setIsSignInModalOpen(true)}
+              // onClick={() => setIsSignInModalOpen(true)}
             >
               Sign Up
             </Button>
             <Button
               variant="outline"
               className="w-full border-gray-700 text-gray-300 hover:bg-gray-800/50 hover:border-teal-500/50 transition-all duration-300 rounded-lg"
-              onClick={() => setIsSignInModalOpen(true)}
+              // onClick={() => setIsSignInModalOpen(true)}
             >
               Log In
             </Button>

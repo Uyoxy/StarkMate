@@ -2,3 +2,4 @@
 
 pub use super::game::Entity as Game;
 pub use super::player::Entity as Player;
+pub use super::refresh_token::Entity as RefreshToken;

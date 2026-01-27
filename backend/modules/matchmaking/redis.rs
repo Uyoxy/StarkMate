@@ -1,5 +1,4 @@
 use deadpool_redis::{Config, Pool, Runtime};
-use redis::AsyncCommands;
 
 /// Creates a Redis connection pool from a Redis URL
 pub fn create_redis_pool(redis_url: &str) -> Result<Pool, Box<dyn std::error::Error>> {

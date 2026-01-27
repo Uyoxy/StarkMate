@@ -8,6 +8,7 @@ echo ""
 # Test 1: Add player to queue
 echo "Test 1: Adding player to Redis queue..."
 docker exec xlmate-redis redis-cli ZADD matchmaking:queue:casual 1737482400 '{"id":"550e8400-e29b-41d4-a716-446655440000","player":{"wallet_address":"test_player_1","elo":1500,"join_time":"2026-01-21T18:00:00Z"},"match_type":"Casual","invite_address":null,"max_elo_diff":null}'
+docker exec xlmate-redis redis-cli EXPIRE matchmaking:queue:casual 3600
 
 echo "✅ Player added"
 echo ""
@@ -43,6 +44,6 @@ echo "🎯 Key Findings:"
 echo "  - ZADD: ✅ Players can be added to queue"
 echo "  - ZRANGE: ✅ Queue contents can be retrieved"
 echo "  - TTL: ✅ Expiration is set"
-echo "  - ZPOPMIN: ✅ FIFO matching works"
+echo "  - ZPOPMIN: ✅ Pops lowest-score entries (score-based, not FIFO)"
 echo ""
 echo "Next: Test persistence by restarting Redis container"

@@ -4,7 +4,38 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "result_side")]
+pub enum ResultSide {
+    #[sea_orm(string_value = "ongoing")]
+    Ongoing,
+    #[sea_orm(string_value = "white_wins")]
+    WhiteWins,
+    #[sea_orm(string_value = "black_wins")]
+    BlackWins,
+    #[sea_orm(string_value = "draw")]
+    Draw,
+    #[sea_orm(string_value = "abandoned")]
+    Abandoned,
+}
+#[derive(Debug, Clone, PartialEq, Eq, EnumIter, DeriveActiveEnum, Serialize, Deserialize)]
+#[sea_orm(rs_type = "String", db_type = "Enum", enum_name = "game_variant")]
+pub enum GameVariant {
+    #[sea_orm(string_value = "standard")]
+    Standard,
+    #[sea_orm(string_value = "chess960")]
+    Chess960,
+    #[sea_orm(string_value = "three_check")]
+    ThreeCheck,
+    #[sea_orm(string_value = "blitz")]
+    Blitz,
+    #[sea_orm(string_value = "rapid")]
+    Rapid,
+    #[sea_orm(string_value = "classical")]
+    Classical,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, DeriveEntityModel)]
+
 #[sea_orm(table_name = "game", schema_name = "smdb")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
@@ -15,7 +46,7 @@ pub struct Model {
     pub fen: String,
     #[sea_orm(column_type = "JsonBinary")]
     pub pgn: Json,
-    pub result: ResultSide,
+    pub result: Option<ResultSide>,
     pub variant: GameVariant,
     pub started_at: DateTimeWithTimeZone,
     pub duration_sec: i32,

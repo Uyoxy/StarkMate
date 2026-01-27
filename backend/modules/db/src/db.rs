@@ -2,7 +2,7 @@ pub mod db {
     use sea_orm::{ConnectOptions, Database, DatabaseConnection};
 
     pub async fn get_db() -> DatabaseConnection {
-        dotenv::dotenv().unwrap();
+        dotenv::dotenv().ok();
         let connect_options = ConnectOptions::new(
             std::env::var("DATABASE_URL").expect("DATABASE_URL is not defined"),
         )
