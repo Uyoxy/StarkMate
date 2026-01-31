@@ -74,13 +74,16 @@ pub fn join_room(room_id: &str, player_id: &str, player_name: Option<String>) ->
     // Check if room exists, create if not
     if !state.rooms.contains_key(room_id) {
         drop(state); // Release the lock before creating the room
-        
+
         // Create the room with the requested ID
         let (tx, _) = broadcast::channel(100);
-        
+
         state = GAME_STATE.lock().unwrap();
-        state.rooms.insert(room_id.to_string(), Room::new(room_id.to_string()));
-        state.message_senders.insert(room_id.to_string(), tx);
+        // Re-check after re-locking to avoid race condition
+        if !state.rooms.contains_key(room_id) {
+            state.rooms.insert(room_id.to_string(), Room::new(room_id.to_string()));
+            state.message_senders.insert(room_id.to_string(), tx);
+        }
     }
 
     let room = state.rooms.get_mut(room_id).unwrap();
@@ -102,7 +105,7 @@ pub fn join_room(room_id: &str, player_id: &str, player_name: Option<String>) ->
     if is_game_starting {
         let now_ms = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
+            .map_err(|e| format!("System clock error: {}", e))?
             .as_millis() as u64;
         room.last_move_at = Some(now_ms);
         log::info!("Game started in room {}, clock started at {}ms", room_id, now_ms);
@@ -143,7 +146,7 @@ pub fn send_move(room_id: &str, player_id: &str, move_notation: &str) -> Result<
 
     let now_ms = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .map_err(|e| format!("System clock error: {}", e))?
         .as_millis() as u64;
 
     // Determine which player is moving based on current turn

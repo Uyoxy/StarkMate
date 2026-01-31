@@ -211,6 +211,7 @@ impl Room {
             last_move_at: None,
             initial_time_ms: DEFAULT_INITIAL_TIME_MS,
             increment_ms: DEFAULT_INCREMENT_MS,
+            pending_takeback: None,
         }
     }
 
@@ -302,14 +303,19 @@ impl GameState {
     // Apply a move to the game state
     // This is a simplified implementation that doesn't validate chess rules
     pub fn apply_move(&mut self, move_notation: &str) -> Result<(), String> {
+        // Defensive guard: only allow moves when game is in progress
+        if !matches!(self.status, GameStatus::InProgress) {
+            return Err("Game is not active".to_string());
+        }
+
         // In a real implementation, this would parse the move notation and update the board
         // For now, we'll just toggle the current turn
-        
+
         self.current_turn = match self.current_turn {
             PieceColor::White => PieceColor::Black,
             PieceColor::Black => PieceColor::White,
         };
-        
+
         Ok(())
     }
 }
